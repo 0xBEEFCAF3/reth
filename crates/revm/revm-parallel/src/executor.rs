@@ -4,7 +4,10 @@ use crate::{
     queue::{TransitionBatch, TransitionQueueStore},
     shared::{SharedState, SharedStateLock},
 };
-use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+use rayon::{
+    prelude::{IntoParallelIterator, ParallelIterator},
+    ThreadPoolBuilder,
+};
 use reth_interfaces::{
     executor::{BlockExecutionError, BlockValidationError, ParallelExecutionError},
     RethError, RethResult,
@@ -33,7 +36,7 @@ use revm::{
 use std::{
     collections::{hash_map, BTreeMap, HashMap},
     ops::RangeInclusive,
-    sync::Arc,
+    sync::{mpsc, Arc},
 };
 
 /// Database boxed with a lifetime and Send.
@@ -142,6 +145,8 @@ pub struct ParallelExecutor<'a, Provider> {
     state: Arc<SharedStateLock<DatabaseRefBox<'a, RethError>>>,
     /// Store for transaction execution order.
     store: Arc<TransitionQueueStore>,
+    /// Rayon thread pool for spawning execution tasks.
+    thread_pool: rayon::ThreadPool,
     /// Execution data.
     data: ExecutionData,
     /// Loaded blocks.
@@ -169,11 +174,18 @@ impl<'a, Provider: BlockReader> ParallelExecutor<'a, Provider> {
         database: DatabaseRefBox<'a, RethError>,
         gas_threshold: u64,
         batch_size_threshold: u64,
-        _num_threads: Option<usize>, // TODO:
+        num_threads: Option<usize>,
     ) -> RethResult<Self> {
         Ok(Self {
             provider,
             store,
+            thread_pool: ThreadPoolBuilder::new()
+                .num_threads(
+                    num_threads
+                        .unwrap_or_else(|| std::thread::available_parallelism().unwrap().get()),
+                )
+                .build()
+                .unwrap(),
             data: ExecutionData::new(chain_spec),
             state: Arc::new(SharedStateLock::new(SharedState::new(database))),
             loaded: HashMap::default(),
@@ -256,7 +268,10 @@ impl<'a, Provider: BlockReader> ParallelExecutor<'a, Provider> {
     }
 
     /// Execute a batch of transactions in parallel.
-    pub fn execute_batch(&mut self, batch: &TransitionBatch) -> Result<(), BlockExecutionError> {
+    pub async fn execute_batch(
+        &mut self,
+        batch: &TransitionBatch,
+    ) -> Result<(), BlockExecutionError> {
         let mut transitions = Vec::with_capacity(batch.len());
         for transition_id in batch.iter() {
             transitions.push(self.get_state_transition(*transition_id)?);
@@ -268,10 +283,28 @@ impl<'a, Provider: BlockReader> ParallelExecutor<'a, Provider> {
             gas_per_transition > self.gas_threshold as u128
         {
             self.batches_executed_in_parallel += 1;
-            transitions
-                .into_par_iter()
-                .map(|transition| self.execute_state_transition(transition))
-                .collect()
+
+            let len = transitions.len();
+            let (tx, rx) = mpsc::channel();
+            for transition in transitions {
+                self.thread_pool.in_place_scope(|scope| {
+                    scope.spawn(|_scope| {
+                        tx.send(self.execute_state_transition(transition)).unwrap();
+                    })
+                });
+            }
+            drop(tx);
+
+            let mut results = Vec::with_capacity(len);
+            while let Ok(result) = rx.recv() {
+                results.push(result);
+            }
+            results
+
+            // transitions
+            //     .into_par_iter()
+            //     .map(|transition| self.execute_state_transition(transition))
+            //     .collect()
         } else {
             self.batches_executed_in_sequence += 1;
             transitions
@@ -331,7 +364,7 @@ impl<'a, Provider: BlockReader> ParallelExecutor<'a, Provider> {
         Ok(())
     }
 
-    fn execute_range_inner(
+    async fn execute_range_inner(
         &mut self,
         range: RangeInclusive<BlockNumber>,
         should_verify_receipts: bool,
@@ -349,7 +382,7 @@ impl<'a, Provider: BlockReader> ParallelExecutor<'a, Provider> {
         // self.state.write().set_state_clear_flag(state_clear_enabled);
 
         for batch in queue.batches().iter().filter(|b| !b.is_empty()) {
-            self.execute_batch(batch)?;
+            self.execute_batch(batch).await?;
 
             'validation: while self.next_block_pending_validation.as_ref() ==
                 self.executed.keys().next()
@@ -450,16 +483,17 @@ impl<'a, Provider: BlockReader> ParallelExecutor<'a, Provider> {
     }
 }
 
+#[async_trait::async_trait]
 impl<Provider> BlockRangeExecutor for ParallelExecutor<'_, Provider>
 where
     Provider: BlockReader,
 {
-    fn execute_range(
+    async fn execute_range(
         &mut self,
         range: RangeInclusive<BlockNumber>,
         should_verify_receipts: bool,
     ) -> Result<(), BlockExecutionError> {
-        self.execute_range_inner(range, should_verify_receipts)
+        self.execute_range_inner(range, should_verify_receipts).await
     }
 
     fn take_output_state(&mut self) -> BundleStateWithReceipts {

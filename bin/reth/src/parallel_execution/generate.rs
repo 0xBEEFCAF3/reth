@@ -166,7 +166,7 @@ impl Command {
             if self.validate {
                 tracing::debug!(target: "reth::cli", ?range, ?queue, "Validating parallel execution");
                 account_status_mismatches +=
-                    self.validate(&provider, sp_database, range.clone(), state)?;
+                    self.validate(&provider, sp_database, range.clone(), state).await?;
                 tracing::debug!(target: "reth::cli", ?range, ?queue, "Successfully validated parallel execution");
             }
 
@@ -181,7 +181,7 @@ impl Command {
     }
 
     /// Returns the number of times the account status was mismatched.
-    fn validate<Provider: BlockReader>(
+    async fn validate<Provider: BlockReader>(
         &self,
         provider: Provider,
         database: DatabaseRefBox<'_, RethError>,
@@ -199,7 +199,7 @@ impl Command {
             0,
             None,
         )?;
-        parallel_executor.execute_range(range.clone(), true)?;
+        parallel_executor.execute_range(range.clone(), true).await?;
         tracing::debug!(target: "reth::cli", ?range, "Successfully executed in parallel");
 
         let parallel_state = parallel_executor.state();

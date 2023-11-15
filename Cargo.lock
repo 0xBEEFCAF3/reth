@@ -6400,6 +6400,7 @@ dependencies = [
  "revm",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 

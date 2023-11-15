@@ -261,7 +261,7 @@ impl<EF: RangeExecutorFactory, DB: Database> Stage<DB> for ExecutionStage<EF> {
         debug!(target: "sync::stages::execution", start = start_block, end = max_block, "Executing range");
 
         // Execute block range
-        executor.execute_range(start_block..=max_block, true).map_err(|error| {
+        executor.execute_range(start_block..=max_block, true).await.map_err(|error| {
             StageError::Block {
                 block: SealedHeader::default(), // TODO:
                 error: BlockErrorKind::Execution(error),

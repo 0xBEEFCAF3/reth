@@ -60,7 +60,7 @@ impl<T: ExecutorFactory> RangeExecutorFactory for T {
 
 /// An executor capable of executing a block.
 #[auto_impl::auto_impl(Box)]
-pub trait BlockExecutor {
+pub trait BlockExecutor: Send {
     /// Execute a block.
     ///
     /// The number of `senders` should be equal to the number of transactions in the block.
@@ -105,9 +105,10 @@ pub trait PrunableBlockExecutor: BlockExecutor {
 }
 
 /// A block executor with range execution implementations.
-pub trait BlockRangeExecutor {
+#[async_trait::async_trait]
+pub trait BlockRangeExecutor: Send {
     /// Execute the range of blocks.
-    fn execute_range(
+    async fn execute_range(
         &mut self,
         range: RangeInclusive<BlockNumber>,
         should_verify_receipts: bool,
@@ -130,13 +131,14 @@ pub struct BlockRangeExecutorWrapper<Provider, Executor> {
     executor: Executor,
 }
 
+#[async_trait::async_trait]
 impl<Provider, Executor> BlockRangeExecutor for BlockRangeExecutorWrapper<Provider, Executor>
 where
     Provider: BlockReader,
     Executor: BlockExecutor,
 {
     /// Execute the range of blocks.
-    fn execute_range(
+    async fn execute_range(
         &mut self,
         range: RangeInclusive<BlockNumber>,
         should_verify_receipts: bool,

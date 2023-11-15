@@ -30,3 +30,4 @@ tracing.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
 itertools.workspace = true
+tokio = { workspace = true, features = ["sync"] }
