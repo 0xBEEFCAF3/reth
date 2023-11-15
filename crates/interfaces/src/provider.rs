@@ -9,6 +9,9 @@ pub enum ProviderError {
     /// Database error.
     #[error(transparent)]
     Database(#[from] crate::db::DatabaseError),
+    /// Inconsistent header gap.
+    #[error("inconsistent header gap in the database")]
+    InconsistentHeaderGap,
     /// The header number was not found for the given block hash.
     #[error("block hash {0} does not exist in Headers table")]
     BlockHashNotFound(BlockHash),
